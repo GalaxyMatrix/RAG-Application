@@ -11,22 +11,28 @@ import datetime
 from data_loader import load_and_chunk_pdf, embed_texts
 from vector_db import QdrantStorage
 from customtypes import RAGChunkANDSrc, UpsertResult, RAGSearchResult, RAGQuerySearchResult
-from pydantic import BaseModel
-
 
 load_dotenv()
 
-
 inngest_client = inngest.Inngest(
-    app_id='rag-app',
-    logger = logging.getLogger('uvicorn'),
-    is_production = False,
-    serializer = inngest.PydanticSerializer()
+    app_id='rag_app',
+    logger=logging.getLogger('uvicorn'),
+    is_production=False,
+    serializer=inngest.PydanticSerializer()
 )
 
 @inngest_client.create_function(
-    fn_id = 'RAG: ingest PDF',
-    trigger = inngest.TriggerEvent(event='rag/ingest_pdf')
+    fn_id='RAG: ingest PDF',
+    trigger=inngest.TriggerEvent(event='rag/ingest_pdf'),
+    throttle=inngest.Throttle(
+        limit=2,
+        period=datetime.timedelta(minutes=1)
+    ),
+    rate_limit=inngest.RateLimit(
+        limit=1,
+        period=datetime.timedelta(hours=4),
+        key="event.data.source_id"
+    )
 )
 async def rag_ingest_pdf(ctx: inngest.Context):
     def _load(ctx: inngest.Context) -> RAGChunkANDSrc:
@@ -39,7 +45,7 @@ async def rag_ingest_pdf(ctx: inngest.Context):
         chunks = chunks_and_src.chunks
         source_id = chunks_and_src.source_id
         vecs = embed_texts(chunks)
-        ids = [str(uuid.uuid5(uuid.NAMESPACE_URL, name=f"{source_id}: {i}")) for i in range(len(chunks))]
+        ids = [str(uuid.uuid5(uuid.NAMESPACE_URL, name=f"{source_id}:{i}")) for i in range(len(chunks))]
         payloads = [{"source": source_id, "text": chunks[i]} for i in range(len(chunks))]
         QdrantStorage().upsert(ids, vecs, payloads)
         return UpsertResult(ingested=len(chunks))
@@ -50,11 +56,11 @@ async def rag_ingest_pdf(ctx: inngest.Context):
 
 
 @inngest_client.create_function(
-    fn_id = 'RAG: Query PDF',
-    trigger = inngest.TriggerEvent(event='rag/query')
+    fn_id='RAG: Query PDF',
+    trigger=inngest.TriggerEvent(event='rag/query_pdf')
 )
 async def rag_query_pdf(ctx: inngest.Context):
-    def _search(question: str, top_k: int=5):
+    def _search(question: str, top_k: int = 5) -> RAGSearchResult:
         query_vec = embed_texts([question])[0]
         store = QdrantStorage()
         found = store.search(query_vec, top_k=top_k)
@@ -65,36 +71,50 @@ async def rag_query_pdf(ctx: inngest.Context):
 
     found = await ctx.step.run('embed-and-search', lambda: _search(question, top_k), output_type=RAGSearchResult)
     
-    answer = await ctx.step.ai.infer_with_tool(
-        "answer-question",
-        "Answer the user's question using the provided context. Be concise and accurate.",
-        tools={
-            "question": question,
-            "context": "\n\n".join(found.contexts)
+    context_block = "\n\n".join(f"- {c}" for c in found.contexts)
+    user_content = (
+        "Use the following context to answer the question.\n\n"
+        f"Context:\n{context_block}\n\n"
+        f"Question: {question}\n"
+        "Answer concisely using the context above."
+    )
+
+    adapter = ai.openai.Adapter(
+        auth_key=os.getenv("OPENAI_API_KEY"),
+        model="gpt-4o-mini"
+    )
+
+    res = await ctx.step.ai.infer(
+        "llm-answer",
+        adapter=adapter,
+        body={
+            "max_tokens": 1024,
+            "temperature": 0.2,
+            "messages": [
+                {"role": "system", "content": "You answer questions using only the provided context."},
+                {"role": "user", "content": user_content}
+            ]
         }
     )
 
-    return RAGQuerySearchResult(answer=answer, sources=found.sources).model_dump()
+    answer = res["choices"][0]["message"]["content"].strip()
+    
+    return RAGQuerySearchResult(
+        answers=answer,
+        sources=found.sources,
+        num_contexts=len(found.contexts)
+    ).model_dump()
 
 
 app = FastAPI()
 
-# Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=["http://localhost:8501"],
     allow_credentials=True,
     allow_methods=["*"],
-    allow_headers=["*"],
+    allow_headers=["*"]
 )
-
-class IngestRequest(BaseModel):
-    pdf_path: str
-    source_id: str = None
-
-class QueryRequest(BaseModel):
-    question: str
-    top_k: int = 5
 
 @app.get("/")
 async def root():
@@ -103,8 +123,7 @@ async def root():
         "status": "running",
         "endpoints": {
             "docs": "/docs",
-            "ingest": "/ingest",
-            "query": "/query",
+            "health": "/health",
             "inngest": "/api/inngest"
         }
     }
@@ -113,33 +132,5 @@ async def root():
 async def health():
     return {"status": "healthy"}
 
-@app.post("/ingest")
-async def ingest_pdf(request: IngestRequest):
-    await inngest_client.send({
-        "name": "rag/ingest_pdf",
-        "data": {
-            "pdf_path": request.pdf_path,
-            "source_id": request.source_id or request.pdf_path
-        }
-    })
-    return {"status": "PDF ingestion started"}
 
-@app.post("/query")
-async def query_pdf(request: QueryRequest):
-    result = await inngest_client.send({
-        "name": "rag/query",
-        "data": {
-            "question": request.question,
-            "top_k": request.top_k
-        }
-    })
-    # For demo, return mock response. In production, use webhooks or polling
-    store = QdrantStorage()
-    query_vec = embed_texts([request.question])[0]
-    found = store.search(query_vec, top_k=request.top_k)
-    return {
-        "answer": f"Based on the context: {found['contexts'][0][:200]}..." if found['contexts'] else "No relevant information found",
-        "sources": found['sources']
-    }
-
-inngest.fast_api.serve(app, inngest_client, functions=[rag_ingest_pdf, rag_query_pdf])
+inngest.fast_api.serve(app, inngest_client, [rag_ingest_pdf, rag_query_pdf])
