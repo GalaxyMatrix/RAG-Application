@@ -12,8 +12,8 @@ load_dotenv()
 
 # Page config with custom theme
 st.set_page_config(
-    page_title="RAG AI Study Assistant",
-    page_icon="🤖",
+    page_title="DocuMind AI - Smart Document Q&A",
+    page_icon="🧠",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -138,7 +138,16 @@ st.markdown("""
 
 @st.cache_resource
 def get_inngest_client() -> inngest.Inngest:
-    return inngest.Inngest(app_id="rag_app", is_production=False)
+    # Get API base URL from environment or use production default
+    is_production = os.getenv("STREAMLIT_ENV") == "production"
+    
+    return inngest.Inngest(
+        app_id="rag_app",
+        is_production=is_production,
+        event_key=os.getenv("INNGEST_EVENT_KEY") if is_production else None,
+        # Point to your Railway backend
+        api_base_url=os.getenv("BACKEND_URL", "https://documind-ai.up.railway.app")
+    )
 
 
 def save_uploaded_pdf(file) -> Path:
@@ -164,12 +173,18 @@ async def send_rag_ingest_event(pdf_path: Path) -> None:
 
 
 def _inngest_api_base() -> str:
+    # Use production backend URL
+    backend_url = os.getenv("BACKEND_URL", "https://documind-ai.up.railway.app")
+    is_production = os.getenv("STREAMLIT_ENV") == "production"
+    
+    if is_production:
+        return f"{backend_url}/api/inngest"
     return os.getenv("INNGEST_API_BASE", "http://127.0.0.1:8288/v1")
 
 
 def fetch_runs(event_id: str) -> list[dict]:
     url = f"{_inngest_api_base()}/events/{event_id}/runs"
-    resp = requests.get(url)
+    resp = requests.get(url, timeout=30)
     resp.raise_for_status()
     data = resp.json()
     return data.get("data", [])

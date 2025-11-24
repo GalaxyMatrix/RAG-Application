@@ -2,10 +2,17 @@ import fitz  # PyMuPDF
 from openai import OpenAI
 from dotenv import load_dotenv
 from typing import List
-import re
+import os
 
 load_dotenv()
-client = OpenAI()
+
+# Get API key explicitly
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+if not OPENAI_API_KEY:
+    raise ValueError("OPENAI_API_KEY environment variable is not set")
+
+# Initialize OpenAI client with explicit API key
+client = OpenAI(api_key=OPENAI_API_KEY)
 EMBED_MODEL = "text-embedding-3-small"
 EMBED_DIM = 1536  # text-embedding-3-small dimension
 
