@@ -1,0 +1,7 @@
+[project-name]
+app = "your-app-name"
+build = "pip install -r requirements.txt"
+start = "uvicorn main:app --host 0.0.0.0 --port $PORT"
+
+[env]
+PORT = "8000"
