@@ -1,6 +1,7 @@
 import asyncio
 from pathlib import Path
 import time
+import base64
 
 import streamlit as st
 from dotenv import load_dotenv
@@ -285,11 +286,18 @@ with tab1:
                         progress_bar.progress(i + 1)
                     
                     try:
+                        # Save file locally (for reference)
                         path = save_uploaded_pdf(uploaded)
+                        
+                        # Read file content and encode as base64
+                        pdf_bytes = uploaded.getvalue()
+                        pdf_base64 = base64.b64encode(pdf_bytes).decode('utf-8')
+                        
+                        # Send base64 content instead of file path
                         event_id = send_event_sync(
                             "rag/ingest_pdf",
                             {
-                                "pdf_path": str(path.resolve()),
+                                "pdf_content": pdf_base64,  # Send content instead of path
                                 "source_id": path.name,
                             }
                         )

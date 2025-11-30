@@ -7,6 +7,8 @@ from dotenv import load_dotenv
 import uuid
 import os
 import datetime
+import base64
+import tempfile
 from openai import OpenAI
 from data_loader import load_and_chunk_pdf, embed_texts
 from vector_db import QdrantStorage
@@ -38,10 +40,25 @@ inngest_client = inngest.Inngest(
 )
 async def rag_ingest_pdf(ctx, step):
     def _load() -> dict:
-        pdf_path = ctx.event.data["pdf_path"]
-        source_id = ctx.event.data.get("source_id", pdf_path)
-        chunks = load_and_chunk_pdf(pdf_path)
-        return RAGChunkANDSrc(chunks=chunks, source_id=source_id).model_dump()
+        # Get PDF content from event (base64 encoded)
+        pdf_content = ctx.event.data.get("pdf_content")
+        source_id = ctx.event.data.get("source_id")
+        
+        # Decode base64 and save to temporary file
+        pdf_bytes = base64.b64decode(pdf_content)
+        
+        # Create temp file
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp:
+            tmp.write(pdf_bytes)
+            tmp_path = tmp.name
+        
+        try:
+            chunks = load_and_chunk_pdf(tmp_path)
+            return RAGChunkANDSrc(chunks=chunks, source_id=source_id).model_dump()
+        finally:
+            # Clean up temp file
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
     
     def _upsert(chunks_and_src: dict) -> dict:
         chunks = chunks_and_src["chunks"]
