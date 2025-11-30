@@ -195,4 +195,72 @@ async def health():
     return {"status": "healthy"}
 
 
+@app.get("/result/{event_id}")
+async def get_result(event_id: str):
+    """Fetch Inngest function result by event ID"""
+    import httpx
+    
+    try:
+        # Query Inngest API for function runs
+        inngest_url = f"https://api.inngest.com/v1/events/{event_id}/runs"
+        headers = {
+            "Authorization": f"Bearer {os.getenv('INNGEST_EVENT_KEY')}"
+        }
+        
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(inngest_url, headers=headers)
+            
+            if response.status_code != 200:
+                raise HTTPException(
+                    status_code=response.status_code,
+                    detail=f"Failed to fetch result from Inngest: {response.text}"
+                )
+            
+            data = response.json()
+            
+            # Check if there are any runs
+            if not data.get("data") or len(data["data"]) == 0:
+                raise HTTPException(status_code=404, detail="No runs found for this event")
+            
+            # Get the first (most recent) run
+            run = data["data"][0]
+            status = run.get("status")
+            
+            # If still running, return 202 Accepted
+            if status in ["Running", "Queued"]:
+                return {
+                    "status": "processing",
+                    "message": "Function is still running"
+                }
+            
+            # If completed, return the output
+            if status == "Completed":
+                output = run.get("output")
+                if output:
+                    return {
+                        "status": "completed",
+                        "answer": output.get("answer", "No answer generated"),
+                        "sources": output.get("sources", []),
+                        "num_contexts": output.get("num_contexts", 0)
+                    }
+            
+            # If failed
+            if status == "Failed":
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Function execution failed: {run.get('error', 'Unknown error')}"
+                )
+            
+            # Unknown status
+            raise HTTPException(
+                status_code=500,
+                detail=f"Unknown run status: {status}"
+            )
+            
+    except httpx.HTTPError as e:
+        raise HTTPException(status_code=500, detail=f"HTTP error: {str(e)}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching result: {str(e)}")
+
+
 inngest.fast_api.serve(app, inngest_client, [rag_ingest_pdf, rag_query_pdf])
