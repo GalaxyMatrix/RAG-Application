@@ -36,8 +36,8 @@ inngest_client = inngest.Inngest(
         key="event.data.source_id"
     )
 )
-async def rag_ingest_pdf(ctx: inngest.Context):
-    def _load(ctx: inngest.Context) -> RAGChunkANDSrc:
+async def rag_ingest_pdf(ctx, step):
+    def _load() -> RAGChunkANDSrc:
         pdf_path = ctx.event.data["pdf_path"]
         source_id = ctx.event.data.get("source_id", pdf_path)
         chunks = load_and_chunk_pdf(pdf_path)
@@ -52,8 +52,8 @@ async def rag_ingest_pdf(ctx: inngest.Context):
         QdrantStorage().upsert(ids, vecs, payloads)
         return UpsertResult(ingested=len(chunks))
 
-    chunks_and_src = await ctx.step.run('load_and_chunk', lambda: _load(ctx))
-    ingested = await ctx.step.run("embed_and_upsert", lambda: _upsert(chunks_and_src))
+    chunks_and_src = await step.run('load_and_chunk', _load)
+    ingested = await step.run("embed_and_upsert", lambda: _upsert(chunks_and_src))
     return ingested.model_dump()
 
 
@@ -61,7 +61,7 @@ async def rag_ingest_pdf(ctx: inngest.Context):
     fn_id='RAG: Query PDF',
     trigger=inngest.TriggerEvent(event='rag/query_pdf')
 )
-async def rag_query_pdf(ctx: inngest.Context):
+async def rag_query_pdf(ctx, step):
     def _search(question: str, top_k: int = 5) -> RAGSearchResult:
         query_vec = embed_texts([question])[0]
         store = QdrantStorage()
@@ -92,8 +92,8 @@ async def rag_query_pdf(ctx: inngest.Context):
     question = ctx.event.data['question']
     top_k = ctx.event.data.get('top_k', 5)
 
-    found = await ctx.step.run('embed-and-search', lambda: _search(question, top_k))
-    answer = await ctx.step.run('llm-answer', lambda: _generate_answer(found, question))
+    found = await step.run('embed-and-search', lambda: _search(question, top_k))
+    answer = await step.run('llm-answer', lambda: _generate_answer(found, question))
     
     return RAGQuerySearchResult(
         answer=answer,
