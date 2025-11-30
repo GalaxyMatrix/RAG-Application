@@ -1,12 +1,11 @@
 import asyncio
 from pathlib import Path
 import time
+import httpx
 
 import streamlit as st
-import inngest
 from dotenv import load_dotenv
 import os
-import requests
 
 load_dotenv()
 
@@ -136,11 +135,6 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 
-@st.cache_resource
-def get_inngest_client() -> inngest.Inngest:
-    return inngest.Inngest(app_id="rag_app", is_production=False)
-
-
 def save_uploaded_pdf(file) -> Path:
     uploads_dir = Path("uploads")
     uploads_dir.mkdir(parents=True, exist_ok=True)
@@ -150,27 +144,78 @@ def save_uploaded_pdf(file) -> Path:
     return file_path
 
 
-async def send_rag_ingest_event(pdf_path: Path) -> None:
-    client = get_inngest_client()
-    await client.send(
-        inngest.Event(
-            name="rag/ingest_pdf",
-            data={
-                "pdf_path": str(pdf_path.resolve()),
-                "source_id": pdf_path.name,
-            },
-        )
-    )
-
-
 def _inngest_api_base() -> str:
-    # Use production Inngest Cloud
-    return os.getenv("INNGEST_API_BASE", "https://api.inngest.com/v1")
+    """Get Inngest API base URL from secrets or environment"""
+    try:
+        return st.secrets.get("INNGEST_API_BASE", "https://api.inngest.com/v1")
+    except (AttributeError, FileNotFoundError):
+        return os.getenv("INNGEST_API_BASE", "https://api.inngest.com/v1")
+
+
+def _inngest_event_key() -> str:
+    """Get Inngest event key from secrets or environment"""
+    try:
+        return st.secrets.get("INNGEST_EVENT_KEY", "")
+    except (AttributeError, FileNotFoundError):
+        return os.getenv("INNGEST_EVENT_KEY", "fnse8_bu_-VVRLPxI3MH9FEBlc6mHE9AD_bEMl7NeYjZAHH4V6S7BGEsdrsDwRVjNfbEaetQq7-qBDD8BFc7AA")
+
+
+async def send_rag_ingest_event(pdf_path: Path) -> str:
+    """Send ingest event to Inngest Cloud"""
+    url = f"{_inngest_api_base()}/events"
+    
+    payload = {
+        "name": "rag/ingest_pdf",
+        "data": {
+            "pdf_path": str(pdf_path.resolve()),
+            "source_id": pdf_path.name,
+        },
+    }
+    
+    headers = {
+        "Authorization": f"Bearer {_inngest_event_key()}",
+        "Content-Type": "application/json",
+    }
+    
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        response = await client.post(url, json=payload, headers=headers)
+        response.raise_for_status()
+        return response.json()["ids"][0]
+
+
+async def send_rag_query_event(question: str, top_k: int) -> str:
+    """Send query event to Inngest Cloud"""
+    url = f"{_inngest_api_base()}/events"
+    
+    payload = {
+        "name": "rag/query_pdf",
+        "data": {
+            "question": question,
+            "top_k": top_k,
+        },
+    }
+    
+    headers = {
+        "Authorization": f"Bearer {_inngest_event_key()}",
+        "Content-Type": "application/json",
+    }
+    
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        response = await client.post(url, json=payload, headers=headers)
+        response.raise_for_status()
+        return response.json()["ids"][0]
 
 
 def fetch_runs(event_id: str) -> list[dict]:
+    """Fetch runs from Inngest Cloud"""
     url = f"{_inngest_api_base()}/events/{event_id}/runs"
-    resp = requests.get(url)
+    
+    headers = {
+        "Authorization": f"Bearer {_inngest_event_key()}",
+    }
+    
+    import requests
+    resp = requests.get(url, headers=headers, timeout=10)
     resp.raise_for_status()
     data = resp.json()
     return data.get("data", [])
@@ -194,20 +239,6 @@ def wait_for_run_output(event_id: str, timeout_s: float = 120.0, poll_interval_s
         time.sleep(poll_interval_s)
 
 
-async def send_rag_query_event(question: str, top_k: int) -> None:
-    client = get_inngest_client()
-    result = await client.send(
-        inngest.Event(
-            name="rag/query_pdf",
-            data={
-                "question": question,
-                "top_k": top_k,
-            },
-        )
-    )
-    return result[0]
-
-
 # Initialize session state
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
@@ -217,7 +248,7 @@ if "uploaded_docs" not in st.session_state:
 # Sidebar
 with st.sidebar:
     st.image("https://img.icons8.com/clouds/200/artificial-intelligence.png", width=150)
-    st.title("📚 RAG AI Assistant")
+    st.title("📚 DocuMind AI")
     st.markdown("---")
     
     # Stats
@@ -257,7 +288,7 @@ with st.sidebar:
     st.caption("Powered by OpenAI, Qdrant & Inngest")
 
 # Main content
-st.title("🤖 RAG AI Study Assistant")
+st.title("🤖 DocuMind AI - Your Intelligent Document Assistant")
 st.markdown("Upload your study materials and ask questions to get instant answers!")
 
 # Create tabs
@@ -302,23 +333,27 @@ with tab1:
                         time.sleep(0.01)
                         progress_bar.progress(i + 1)
                     
-                    path = save_uploaded_pdf(uploaded)
-                    asyncio.run(send_rag_ingest_event(path))
-                    time.sleep(0.3)
-                    
-                    # Add to session state
-                    if path.name not in st.session_state.uploaded_docs:
-                        st.session_state.uploaded_docs.append(path.name)
-                    
-                    progress_bar.empty()
-                
-                st.markdown(f"""
-                <div class="success-box">
-                    <strong>✅ Success!</strong><br/>
-                    Document "{path.name}" has been uploaded and is being processed.
-                </div>
-                """, unsafe_allow_html=True)
-                st.balloons()
+                    try:
+                        path = save_uploaded_pdf(uploaded)
+                        asyncio.run(send_rag_ingest_event(path))
+                        time.sleep(0.3)
+                        
+                        # Add to session state
+                        if path.name not in st.session_state.uploaded_docs:
+                            st.session_state.uploaded_docs.append(path.name)
+                        
+                        progress_bar.empty()
+                        
+                        st.markdown(f"""
+                        <div class="success-box">
+                            <strong>✅ Success!</strong><br/>
+                            Document "{path.name}" has been uploaded and is being processed.
+                        </div>
+                        """, unsafe_allow_html=True)
+                        st.balloons()
+                    except Exception as e:
+                        progress_bar.empty()
+                        st.error(f"❌ Error uploading document: {str(e)}")
 
 # Tab 2: Ask Questions
 with tab2:
