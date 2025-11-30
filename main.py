@@ -14,10 +14,13 @@ from customtypes import RAGChunkANDSrc, UpsertResult, RAGSearchResult, RAGQueryS
 
 load_dotenv()
 
+# Configure Inngest for production
 inngest_client = inngest.Inngest(
     app_id='rag_app',
     logger=logging.getLogger('uvicorn'),
-    is_production=False
+    is_production=True,  # Set to True for cloud mode
+    event_key=os.getenv("INNGEST_EVENT_KEY"),  # Add event key
+    signing_key=os.getenv("INNGEST_SIGNING_KEY")  # Add signing key
 )
 
 @inngest_client.create_function(
@@ -103,20 +106,19 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:8501",  # Local development
-        "https://your-streamlit-app.streamlit.app"  # Add Streamlit Cloud URL
-    ],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"]
 )
 
 @app.get("/")
+@app.head("/")
 async def root():
     return {
         "message": "RAG AI Agent API",
         "status": "running",
+        "version": "1.0.0",
         "endpoints": {
             "docs": "/docs",
             "health": "/health",
@@ -125,6 +127,7 @@ async def root():
     }
 
 @app.get("/health")
+@app.head("/health")
 async def health():
     return {"status": "healthy"}
 
