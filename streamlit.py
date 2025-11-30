@@ -161,6 +161,14 @@ def get_inngest_client():
     )
 
 
+def get_backend_url():
+    """Get backend API URL"""
+    try:
+        return st.secrets.get("BACKEND_URL", "https://documentai-416p.onrender.com")
+    except (AttributeError, FileNotFoundError):
+        return os.getenv("BACKEND_URL", "https://documentai-416p.onrender.com")
+
+
 def save_uploaded_pdf(file) -> Path:
     uploads_dir = Path("uploads")
     uploads_dir.mkdir(parents=True, exist_ok=True)
