@@ -2,6 +2,7 @@ import asyncio
 from pathlib import Path
 import time
 import base64
+import requests
 
 import streamlit as st
 from dotenv import load_dotenv
@@ -281,52 +282,46 @@ with tab1:
             if st.button("🚀 Upload & Process", type="primary", use_container_width=True):
                 with st.spinner("🔄 Uploading and processing your document..."):
                     progress_bar = st.progress(0)
-                    for i in range(100):
+                    for i in range(50):
                         time.sleep(0.01)
                         progress_bar.progress(i + 1)
                     
                     try:
-                        # Save file locally (for reference)
-                        path = save_uploaded_pdf(uploaded)
+                        # Prepare file for upload
+                        files = {"file": (uploaded.name, uploaded.getvalue(), "application/pdf")}
                         
-                        # Read file content and encode as base64
-                        pdf_bytes = uploaded.getvalue()
-                        pdf_base64 = base64.b64encode(pdf_bytes).decode('utf-8')
+                        # Send to backend API
+                        backend_url = get_backend_url()
+                        response = requests.post(f"{backend_url}/upload", files=files, timeout=120)
                         
-                        # Send base64 content instead of file path
-                        event_id = send_event_sync(
-                            "rag/ingest_pdf",
-                            {
-                                "pdf_content": pdf_base64,  # Send content instead of path
-                                "source_id": path.name,
-                            }
-                        )
+                        for i in range(50, 100):
+                            time.sleep(0.01)
+                            progress_bar.progress(i + 1)
+                        
+                        response.raise_for_status()
+                        result = response.json()
                         
                         # Add to session state
-                        if path.name not in st.session_state.uploaded_docs:
-                            st.session_state.uploaded_docs.append(path.name)
+                        if uploaded.name not in st.session_state.uploaded_docs:
+                            st.session_state.uploaded_docs.append(uploaded.name)
                         
                         progress_bar.empty()
                         
                         st.markdown(f"""
                         <div class="success-box">
                             <strong>✅ Success!</strong><br/>
-                            Document "{path.name}" has been uploaded and queued for processing.<br/>
-                            Event ID: {event_id}
-                        </div>
-                        """, unsafe_allow_html=True)
-                        
-                        st.markdown("""
-                        <div class="info-box">
-                            ℹ️ <strong>Note:</strong> Document processing happens in the background. 
-                            Wait 10-30 seconds before querying this document.
+                            Document "{uploaded.name}" has been processed successfully.<br/>
+                            Chunks processed: {result.get('chunks_processed', 'N/A')}
                         </div>
                         """, unsafe_allow_html=True)
                         
                         st.balloons()
-                    except Exception as e:
+                    except requests.exceptions.RequestException as e:
                         progress_bar.empty()
                         st.error(f"❌ Error uploading document: {str(e)}")
+                    except Exception as e:
+                        progress_bar.empty()
+                        st.error(f"❌ Error: {str(e)}")
 
 # Tab 2: Ask Questions
 with tab2:

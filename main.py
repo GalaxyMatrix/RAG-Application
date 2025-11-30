@@ -1,5 +1,5 @@
 import logging
-from fastapi import FastAPI
+from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 import inngest
 import inngest.fast_api
@@ -129,6 +129,50 @@ app.add_middleware(
     allow_headers=["*"]
 )
 
+
+# NEW: Direct upload endpoint
+@app.post("/upload")
+async def upload_pdf(file: UploadFile = File(...)):
+    """Direct PDF upload endpoint that processes synchronously"""
+    try:
+        # Validate file type
+        if not file.filename.endswith('.pdf'):
+            raise HTTPException(status_code=400, detail="Only PDF files are allowed")
+        
+        # Read file content
+        pdf_bytes = await file.read()
+        
+        # Save to temporary file
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as tmp:
+            tmp.write(pdf_bytes)
+            tmp_path = tmp.name
+        
+        try:
+            # Process PDF
+            chunks = load_and_chunk_pdf(tmp_path)
+            source_id = file.filename
+            
+            # Embed and store
+            vecs = embed_texts(chunks)
+            ids = [str(uuid.uuid5(uuid.NAMESPACE_URL, name=f"{source_id}:{i}")) for i in range(len(chunks))]
+            payloads = [{"source": source_id, "text": chunks[i]} for i in range(len(chunks))]
+            QdrantStorage().upsert(ids, vecs, payloads)
+            
+            return {
+                "status": "success",
+                "message": f"Successfully processed {file.filename}",
+                "chunks_processed": len(chunks),
+                "source_id": source_id
+            }
+        finally:
+            # Clean up temp file
+            if os.path.exists(tmp_path):
+                os.unlink(tmp_path)
+                
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/")
 @app.head("/")
 async def root():
@@ -139,9 +183,11 @@ async def root():
         "endpoints": {
             "docs": "/docs",
             "health": "/health",
+            "upload": "/upload",
             "inngest": "/api/inngest"
         }
     }
+
 
 @app.get("/health")
 @app.head("/health")
