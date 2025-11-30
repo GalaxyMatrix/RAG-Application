@@ -347,15 +347,54 @@ with tab2:
                 </div>
                 """, unsafe_allow_html=True)
                 
-                # Answer or pending status
+                # Check if pending and try to fetch result
                 if chat.get("pending"):
-                    st.markdown(f"""
-                    <div class="info-box">
-                        ⏳ <strong>Processing...</strong><br/>
-                        Your question is being processed. Event ID: {chat.get('event_id', 'N/A')}<br/>
-                        <small>Check your Inngest dashboard or refresh in a few seconds.</small>
-                    </div>
-                    """, unsafe_allow_html=True)
+                    event_id = chat.get('event_id')
+                    
+                    # Try to fetch result from backend
+                    try:
+                        backend_url = get_backend_url()
+                        result_response = requests.get(
+                            f"{backend_url}/result/{event_id}",
+                            timeout=10
+                        )
+                        
+                        if result_response.status_code == 200:
+                            result = result_response.json()
+                            
+                            # Update chat history with result
+                            st.session_state.chat_history[i] = {
+                                "question": chat['question'],
+                                "answer": result.get('answer', 'No answer generated'),
+                                "sources": result.get('sources', []),
+                                "pending": False
+                            }
+                            st.rerun()
+                        else:
+                            # Still pending - show with auto-refresh
+                            st.markdown(f"""
+                            <div class="info-box">
+                                ⏳ <strong>Processing...</strong><br/>
+                                Your question is being processed. Event ID: {event_id}<br/>
+                                <small>Auto-refreshing every 3 seconds...</small>
+                            </div>
+                            """, unsafe_allow_html=True)
+                            
+                            # Auto-refresh after 3 seconds
+                            time.sleep(3)
+                            st.rerun()
+                    except Exception as e:
+                        st.markdown(f"""
+                        <div class="info-box">
+                            ⏳ <strong>Processing...</strong><br/>
+                            Event ID: {event_id}<br/>
+                            <small>Checking for results... (will auto-refresh)</small>
+                        </div>
+                        """, unsafe_allow_html=True)
+                        
+                        # Auto-refresh after 3 seconds
+                        time.sleep(3)
+                        st.rerun()
                 else:
                     # Answer
                     st.markdown(f"""
@@ -417,9 +456,8 @@ with tab2:
                         "timestamp": time.time()
                     })
                     
-                    st.success(f"✅ Question submitted! Event ID: {event_id}")
-                    st.info("⏳ Processing your question. Check the Inngest dashboard for results.")
-                    time.sleep(2)
+                    st.success(f"✅ Question submitted!")
+                    time.sleep(1)
                     st.rerun()
                     
                 except Exception as e:
@@ -428,17 +466,12 @@ with tab2:
     # Empty state
     if not st.session_state.chat_history:
         st.info("👆 Ask a question above to get started!")
-    
-    # Note about async processing
-    if any(chat.get("pending") for chat in st.session_state.chat_history):
-        st.markdown("---")
-        st.info("💡 **Tip:** Questions are processed asynchronously. Check your [Inngest Dashboard](https://app.inngest.com) to see results.")
 
 # Footer
 st.markdown("---")
 st.markdown("""
 <div style="text-align: center; color: #2c3e50; padding: 2rem;">
     <p style="font-size: 1.1rem; font-weight: 600;">🚀 Built with Streamlit, OpenAI, Qdrant & Inngest</p>
-    <p style="font-size: 0.9rem; color: #667eea;">💡 Tip: Questions are processed asynchronously.</p>
+    <p style="font-size: 0.9rem; color: #667eea;">💡 Tip: Answers appear automatically once processing is complete</p>
 </div>
 """, unsafe_allow_html=True)
