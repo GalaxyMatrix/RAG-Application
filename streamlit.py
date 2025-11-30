@@ -6,6 +6,7 @@ import httpx
 import streamlit as st
 from dotenv import load_dotenv
 import os
+import inngest
 
 load_dotenv()
 
@@ -135,6 +136,21 @@ st.markdown("""
     """, unsafe_allow_html=True)
 
 
+@st.cache_resource
+def get_inngest_client():
+    """Get Inngest client with proper configuration"""
+    try:
+        event_key = st.secrets.get("INNGEST_EVENT_KEY", "")
+    except (AttributeError, FileNotFoundError):
+        event_key = os.getenv("INNGEST_EVENT_KEY", "fnse8_bu_-VVRLPxI3MH9FEBlc6mHE9AD_bEMl7NeYjZAHH4V6S7BGEsdrsDwRVjNfbEaetQq7-qBDD8BFc7AA")
+    
+    return inngest.Inngest(
+        app_id="rag_app",
+        event_key=event_key,
+        is_production=True
+    )
+
+
 def save_uploaded_pdf(file) -> Path:
     uploads_dir = Path("uploads")
     uploads_dir.mkdir(parents=True, exist_ok=True)
@@ -144,8 +160,40 @@ def save_uploaded_pdf(file) -> Path:
     return file_path
 
 
+async def send_rag_ingest_event(pdf_path: Path) -> str:
+    """Send ingest event to Inngest Cloud using SDK"""
+    client = get_inngest_client()
+    
+    result = await client.send(
+        inngest.Event(
+            name="rag/ingest_pdf",
+            data={
+                "pdf_path": str(pdf_path.resolve()),
+                "source_id": pdf_path.name,
+            },
+        )
+    )
+    return result[0] if result else None
+
+
+async def send_rag_query_event(question: str, top_k: int) -> str:
+    """Send query event to Inngest Cloud using SDK"""
+    client = get_inngest_client()
+    
+    result = await client.send(
+        inngest.Event(
+            name="rag/query_pdf",
+            data={
+                "question": question,
+                "top_k": top_k,
+            },
+        )
+    )
+    return result[0] if result else None
+
+
 def _inngest_api_base() -> str:
-    """Get Inngest API base URL from secrets or environment"""
+    """Get Inngest API base URL"""
     try:
         return st.secrets.get("INNGEST_API_BASE", "https://api.inngest.com/v1")
     except (AttributeError, FileNotFoundError):
@@ -153,57 +201,11 @@ def _inngest_api_base() -> str:
 
 
 def _inngest_event_key() -> str:
-    """Get Inngest event key from secrets or environment"""
+    """Get Inngest event key"""
     try:
         return st.secrets.get("INNGEST_EVENT_KEY", "")
     except (AttributeError, FileNotFoundError):
         return os.getenv("INNGEST_EVENT_KEY", "fnse8_bu_-VVRLPxI3MH9FEBlc6mHE9AD_bEMl7NeYjZAHH4V6S7BGEsdrsDwRVjNfbEaetQq7-qBDD8BFc7AA")
-
-
-async def send_rag_ingest_event(pdf_path: Path) -> str:
-    """Send ingest event to Inngest Cloud"""
-    url = f"{_inngest_api_base()}/events"
-    
-    payload = {
-        "name": "rag/ingest_pdf",
-        "data": {
-            "pdf_path": str(pdf_path.resolve()),
-            "source_id": pdf_path.name,
-        },
-    }
-    
-    headers = {
-        "Authorization": f"Bearer {_inngest_event_key()}",
-        "Content-Type": "application/json",
-    }
-    
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        response = await client.post(url, json=payload, headers=headers)
-        response.raise_for_status()
-        return response.json()["ids"][0]
-
-
-async def send_rag_query_event(question: str, top_k: int) -> str:
-    """Send query event to Inngest Cloud"""
-    url = f"{_inngest_api_base()}/events"
-    
-    payload = {
-        "name": "rag/query_pdf",
-        "data": {
-            "question": question,
-            "top_k": top_k,
-        },
-    }
-    
-    headers = {
-        "Authorization": f"Bearer {_inngest_event_key()}",
-        "Content-Type": "application/json",
-    }
-    
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        response = await client.post(url, json=payload, headers=headers)
-        response.raise_for_status()
-        return response.json()["ids"][0]
 
 
 def fetch_runs(event_id: str) -> list[dict]:
@@ -335,7 +337,7 @@ with tab1:
                     
                     try:
                         path = save_uploaded_pdf(uploaded)
-                        asyncio.run(send_rag_ingest_event(path))
+                        event_id = asyncio.run(send_rag_ingest_event(path))
                         time.sleep(0.3)
                         
                         # Add to session state
@@ -347,7 +349,8 @@ with tab1:
                         st.markdown(f"""
                         <div class="success-box">
                             <strong>✅ Success!</strong><br/>
-                            Document "{path.name}" has been uploaded and is being processed.
+                            Document "{path.name}" has been uploaded and is being processed.<br/>
+                            Event ID: {event_id}
                         </div>
                         """, unsafe_allow_html=True)
                         st.balloons()
