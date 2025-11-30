@@ -362,27 +362,29 @@ with tab2:
                         if result_response.status_code == 200:
                             result = result_response.json()
                             
-                            # Update chat history with result
-                            st.session_state.chat_history[i] = {
-                                "question": chat['question'],
-                                "answer": result.get('answer', 'No answer generated'),
-                                "sources": result.get('sources', []),
-                                "pending": False
-                            }
-                            st.rerun()
-                        else:
-                            # Still pending - show with auto-refresh
-                            st.markdown(f"""
-                            <div class="info-box">
-                                ⏳ <strong>Processing...</strong><br/>
-                                Your question is being processed. Event ID: {event_id}<br/>
-                                <small>Auto-refreshing every 3 seconds...</small>
-                            </div>
-                            """, unsafe_allow_html=True)
-                            
-                            # Auto-refresh after 3 seconds
-                            time.sleep(3)
-                            st.rerun()
+                            # Check if the result is completed
+                            if result.get('status') == 'completed':
+                                # Update chat history with result
+                                st.session_state.chat_history[i] = {
+                                    "question": chat['question'],
+                                    "answer": result.get('answer', 'No answer generated'),
+                                    "sources": result.get('sources', []),
+                                    "pending": False
+                                }
+                                st.rerun()
+                            else:
+                                # Still processing - show with auto-refresh
+                                st.markdown(f"""
+                                <div class="info-box">
+                                    ⏳ <strong>Processing...</strong><br/>
+                                    Your question is being processed. Event ID: {event_id}<br/>
+                                    <small>Auto-refreshing every 3 seconds...</small>
+                                </div>
+                                """, unsafe_allow_html=True)
+                                
+                                # Auto-refresh after 3 seconds
+                                time.sleep(3)
+                                st.rerun()
                     except Exception as e:
                         st.markdown(f"""
                         <div class="info-box">

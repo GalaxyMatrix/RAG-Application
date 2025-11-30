@@ -201,40 +201,57 @@ async def get_result(event_id: str):
     import httpx
     
     try:
-        # Query Inngest API for function runs
+        # Use Inngest's runs API endpoint
         inngest_url = f"https://api.inngest.com/v1/events/{event_id}/runs"
         headers = {
-            "Authorization": f"Bearer {os.getenv('INNGEST_EVENT_KEY')}"
+            "Authorization": f"Bearer {os.getenv('INNGEST_EVENT_KEY')}",
+            "Content-Type": "application/json"
         }
         
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.get(inngest_url, headers=headers)
             
+            # Log response for debugging
+            print(f"Inngest API response status: {response.status_code}")
+            print(f"Inngest API response: {response.text[:500]}")
+            
+            if response.status_code == 401:
+                raise HTTPException(
+                    status_code=500,
+                    detail="Invalid Inngest Event Key - check INNGEST_EVENT_KEY environment variable"
+                )
+            
             if response.status_code != 200:
                 raise HTTPException(
-                    status_code=response.status_code,
-                    detail=f"Failed to fetch result from Inngest: {response.text}"
+                    status_code=500,
+                    detail=f"Inngest API error ({response.status_code}): {response.text[:200]}"
                 )
             
             data = response.json()
             
             # Check if there are any runs
-            if not data.get("data") or len(data["data"]) == 0:
-                raise HTTPException(status_code=404, detail="No runs found for this event")
+            runs = data.get("data", [])
+            if not runs or len(runs) == 0:
+                return {
+                    "status": "processing",
+                    "message": "No runs found yet, still processing"
+                }
             
             # Get the first (most recent) run
-            run = data["data"][0]
-            status = run.get("status")
+            run = runs[0]
+            run_status = run.get("status", "").lower()
+            
+            print(f"Run status: {run_status}")
             
             # If still running, return 202 Accepted
-            if status in ["Running", "Queued"]:
+            if run_status in ["running", "queued", "started"]:
                 return {
                     "status": "processing",
                     "message": "Function is still running"
                 }
             
             # If completed, return the output
-            if status == "Completed":
+            if run_status == "completed":
                 output = run.get("output")
                 if output:
                     return {
@@ -243,23 +260,35 @@ async def get_result(event_id: str):
                         "sources": output.get("sources", []),
                         "num_contexts": output.get("num_contexts", 0)
                     }
+                else:
+                    return {
+                        "status": "completed",
+                        "answer": "Function completed but no output was returned",
+                        "sources": [],
+                        "num_contexts": 0
+                    }
             
             # If failed
-            if status == "Failed":
-                raise HTTPException(
-                    status_code=500,
-                    detail=f"Function execution failed: {run.get('error', 'Unknown error')}"
-                )
+            if run_status == "failed":
+                error_msg = run.get("error", "Unknown error")
+                return {
+                    "status": "error",
+                    "message": f"Function execution failed: {error_msg}",
+                    "answer": "An error occurred while processing your question",
+                    "sources": []
+                }
             
-            # Unknown status
-            raise HTTPException(
-                status_code=500,
-                detail=f"Unknown run status: {status}"
-            )
+            # Unknown status - still processing
+            return {
+                "status": "processing",
+                "message": f"Current status: {run_status}"
+            }
             
     except httpx.HTTPError as e:
-        raise HTTPException(status_code=500, detail=f"HTTP error: {str(e)}")
+        print(f"HTTP error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"HTTP error connecting to Inngest: {str(e)}")
     except Exception as e:
+        print(f"Unexpected error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error fetching result: {str(e)}")
 
 
