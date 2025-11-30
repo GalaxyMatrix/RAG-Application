@@ -93,3 +93,5 @@ cython_debug/
 *.tmp
 *.temp
 .cache/
+
+.env.example

@@ -12,8 +12,8 @@ load_dotenv()
 
 # Page config with custom theme
 st.set_page_config(
-    page_title="DocuMind AI - Smart Document Q&A",
-    page_icon="🧠",
+    page_title="RAG AI Study Assistant",
+    page_icon="🤖",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -138,22 +138,10 @@ st.markdown("""
 
 @st.cache_resource
 def get_inngest_client() -> inngest.Inngest:
-    """Initialize Inngest client with proper configuration"""
-    backend_url = os.getenv("BACKEND_URL", "https://documind-ai.up.railway.app")
-    is_production = os.getenv("STREAMLIT_ENV") == "production"
-    
-    event_api_base = f"{backend_url}/api/inngest" if is_production else "http://127.0.0.1:8000/api/inngest"
-    
-    return inngest.Inngest(
-        app_id="rag_app",
-        is_production=is_production,
-        event_key=os.getenv("INNGEST_EVENT_KEY") if is_production else None,
-        event_api_base_url=event_api_base
-    )
+    return inngest.Inngest(app_id="rag_app", is_production=False)
 
 
 def save_uploaded_pdf(file) -> Path:
-    """Save uploaded PDF to local filesystem"""
     uploads_dir = Path("uploads")
     uploads_dir.mkdir(parents=True, exist_ok=True)
     file_path = uploads_dir / file.name
@@ -162,10 +150,9 @@ def save_uploaded_pdf(file) -> Path:
     return file_path
 
 
-async def send_rag_ingest_event(pdf_path: Path) -> str:
-    """Send PDF ingestion event to Inngest"""
+async def send_rag_ingest_event(pdf_path: Path) -> None:
     client = get_inngest_client()
-    result = await client.send(
+    await client.send(
         inngest.Event(
             name="rag/ingest_pdf",
             data={
@@ -174,64 +161,40 @@ async def send_rag_ingest_event(pdf_path: Path) -> str:
             },
         )
     )
-    return result[0] if result else None
 
 
 def _inngest_api_base() -> str:
-    """Get Inngest API base URL"""
-    backend_url = os.getenv("BACKEND_URL", "https://documind-ai.up.railway.app")
-    is_production = os.getenv("STREAMLIT_ENV") == "production"
-    
-    if is_production:
-        return f"{backend_url}/api/inngest"
-    return "http://127.0.0.1:8000/api/inngest"
+    # Use production Inngest Cloud
+    return os.getenv("INNGEST_API_BASE", "https://api.inngest.com/v1")
 
 
 def fetch_runs(event_id: str) -> list[dict]:
-    """Fetch run status from Inngest"""
     url = f"{_inngest_api_base()}/events/{event_id}/runs"
-    try:
-        resp = requests.get(url, timeout=30)
-        resp.raise_for_status()
-        data = resp.json()
-        return data.get("data", [])
-    except Exception as e:
-        st.error(f"Error fetching runs: {str(e)}")
-        return []
+    resp = requests.get(url)
+    resp.raise_for_status()
+    data = resp.json()
+    return data.get("data", [])
 
 
 def wait_for_run_output(event_id: str, timeout_s: float = 120.0, poll_interval_s: float = 0.5) -> dict:
-    """Wait for Inngest function run to complete"""
     start = time.time()
     last_status = None
-    
-    with st.status("Processing...", expanded=True) as status:
-        while True:
-            runs = fetch_runs(event_id)
-            if runs:
-                run = runs[0]
-                status_text = run.get("status")
-                last_status = status_text or last_status
-                
-                st.write(f"Status: {last_status}")
-                
-                if status_text in ("Completed", "Succeeded", "Success", "Finished"):
-                    status.update(label="Complete!", state="complete", expanded=False)
-                    return run.get("output") or {}
-                
-                if status_text in ("Failed", "Cancelled"):
-                    status.update(label="Failed", state="error", expanded=False)
-                    raise RuntimeError(f"Function run {status_text}")
-            
-            if time.time() - start > timeout_s:
-                status.update(label="Timeout", state="error", expanded=False)
-                raise TimeoutError(f"Timed out waiting for run output (last status: {last_status})")
-            
-            time.sleep(poll_interval_s)
+    while True:
+        runs = fetch_runs(event_id)
+        if runs:
+            run = runs[0]
+            status = run.get("status")
+            last_status = status or last_status
+            if status in ("Completed", "Succeeded", "Success", "Finished"):
+                return run.get("output") or {}
+            if status in ("Failed", "Cancelled"):
+                raise RuntimeError(f"Function run {status}")
+        if time.time() - start > timeout_s:
+            raise TimeoutError(f"Timed out waiting for run output (last status: {last_status})")
+        time.sleep(poll_interval_s)
 
 
-async def send_rag_query_event(question: str, top_k: int) -> str:
-    """Send query event to Inngest"""
+async def send_rag_query_event(question: str, top_k: int) -> None:
     client = get_inngest_client()
     result = await client.send(
         inngest.Event(
@@ -242,7 +205,7 @@ async def send_rag_query_event(question: str, top_k: int) -> str:
             },
         )
     )
-    return result[0] if result else None
+    return result[0]
 
 
 # Initialize session state
@@ -333,42 +296,29 @@ with tab1:
         col_btn1, col_btn2, col_btn3 = st.columns([1, 2, 1])
         with col_btn2:
             if st.button("🚀 Upload & Process", type="primary", use_container_width=True):
-                try:
-                    with st.spinner("🔄 Uploading and processing your document..."):
-                        progress_bar = st.progress(0)
-                        for i in range(50):
-                            time.sleep(0.01)
-                            progress_bar.progress(i + 1)
-                        
-                        path = save_uploaded_pdf(uploaded)
-                        
-                        for i in range(50, 80):
-                            time.sleep(0.01)
-                            progress_bar.progress(i + 1)
-                        
-                        event_id = asyncio.run(send_rag_ingest_event(path))
-                        
-                        for i in range(80, 100):
-                            time.sleep(0.01)
-                            progress_bar.progress(i + 1)
-                        
-                        # Add to session state
-                        if path.name not in st.session_state.uploaded_docs:
-                            st.session_state.uploaded_docs.append(path.name)
-                        
-                        progress_bar.empty()
+                with st.spinner("🔄 Uploading and processing your document..."):
+                    progress_bar = st.progress(0)
+                    for i in range(100):
+                        time.sleep(0.01)
+                        progress_bar.progress(i + 1)
                     
-                    st.markdown(f"""
-                    <div class="success-box">
-                        <strong>✅ Success!</strong><br/>
-                        Document "{path.name}" has been uploaded and is being processed.
-                    </div>
-                    """, unsafe_allow_html=True)
-                    st.balloons()
+                    path = save_uploaded_pdf(uploaded)
+                    asyncio.run(send_rag_ingest_event(path))
+                    time.sleep(0.3)
                     
-                except Exception as e:
-                    st.error(f"❌ Error uploading document: {str(e)}")
-                    st.info("💡 Make sure your backend is running at: " + os.getenv("BACKEND_URL", "https://documind-ai.up.railway.app"))
+                    # Add to session state
+                    if path.name not in st.session_state.uploaded_docs:
+                        st.session_state.uploaded_docs.append(path.name)
+                    
+                    progress_bar.empty()
+                
+                st.markdown(f"""
+                <div class="success-box">
+                    <strong>✅ Success!</strong><br/>
+                    Document "{path.name}" has been uploaded and is being processed.
+                </div>
+                """, unsafe_allow_html=True)
+                st.balloons()
 
 # Tab 2: Ask Questions
 with tab2:
@@ -428,24 +378,24 @@ with tab2:
             submitted = st.form_submit_button("🔍 Get Answer", type="primary", use_container_width=True)
         
         if submitted and question.strip():
-            try:
-                event_id = asyncio.run(send_rag_query_event(question.strip(), int(top_k)))
-                output = wait_for_run_output(event_id)
-                answer = output.get("answers", "No answer generated")
-                sources = output.get("sources", [])
-                
-                # Add to chat history
-                st.session_state.chat_history.append({
-                    "question": question.strip(),
-                    "answer": answer,
-                    "sources": sources
-                })
-                
-                st.rerun()
-                
-            except Exception as e:
-                st.error(f"❌ Error: {str(e)}")
-                st.info("💡 Make sure your backend is running and documents are uploaded first!")
+            with st.spinner("🤔 Thinking... Generating answer from your documents..."):
+                try:
+                    event_id = asyncio.run(send_rag_query_event(question.strip(), int(top_k)))
+                    output = wait_for_run_output(event_id)
+                    answer = output.get("answer", "")
+                    sources = output.get("sources", [])
+                    
+                    # Add to chat history
+                    st.session_state.chat_history.append({
+                        "question": question.strip(),
+                        "answer": answer,
+                        "sources": sources
+                    })
+                    
+                    st.rerun()
+                    
+                except Exception as e:
+                    st.error(f"❌ Error: {str(e)}")
     
     # Empty state
     if not st.session_state.chat_history:
