@@ -37,24 +37,24 @@ inngest_client = inngest.Inngest(
     )
 )
 async def rag_ingest_pdf(ctx, step):
-    def _load() -> RAGChunkANDSrc:
+    def _load() -> dict:
         pdf_path = ctx.event.data["pdf_path"]
         source_id = ctx.event.data.get("source_id", pdf_path)
         chunks = load_and_chunk_pdf(pdf_path)
-        return RAGChunkANDSrc(chunks=chunks, source_id=source_id)
+        return RAGChunkANDSrc(chunks=chunks, source_id=source_id).model_dump()
     
-    def _upsert(chunks_and_src: RAGChunkANDSrc) -> UpsertResult:
-        chunks = chunks_and_src.chunks
-        source_id = chunks_and_src.source_id
+    def _upsert(chunks_and_src: dict) -> dict:
+        chunks = chunks_and_src["chunks"]
+        source_id = chunks_and_src["source_id"]
         vecs = embed_texts(chunks)
         ids = [str(uuid.uuid5(uuid.NAMESPACE_URL, name=f"{source_id}:{i}")) for i in range(len(chunks))]
         payloads = [{"source": source_id, "text": chunks[i]} for i in range(len(chunks))]
         QdrantStorage().upsert(ids, vecs, payloads)
-        return UpsertResult(ingested=len(chunks))
+        return UpsertResult(ingested=len(chunks)).model_dump()
 
     chunks_and_src = await step.run('load_and_chunk', _load)
     ingested = await step.run("embed_and_upsert", lambda: _upsert(chunks_and_src))
-    return ingested.model_dump()
+    return ingested
 
 
 @inngest_client.create_function(
@@ -62,14 +62,14 @@ async def rag_ingest_pdf(ctx, step):
     trigger=inngest.TriggerEvent(event='rag/query_pdf')
 )
 async def rag_query_pdf(ctx, step):
-    def _search(question: str, top_k: int = 5) -> RAGSearchResult:
+    def _search(question: str, top_k: int = 5) -> dict:
         query_vec = embed_texts([question])[0]
         store = QdrantStorage()
         found = store.search(query_vec, top_k=top_k)
-        return RAGSearchResult(**found)
+        return found  # Already a dict
     
-    def _generate_answer(found: RAGSearchResult, question: str) -> str:
-        context_block = "\n\n".join(f"- {c}" for c in found.contexts)
+    def _generate_answer(found: dict, question: str) -> str:
+        context_block = "\n\n".join(f"- {c}" for c in found["contexts"])
         user_content = (
             "Use the following context to answer the question.\n\n"
             f"Context:\n{context_block}\n\n"
@@ -95,11 +95,11 @@ async def rag_query_pdf(ctx, step):
     found = await step.run('embed-and-search', lambda: _search(question, top_k))
     answer = await step.run('llm-answer', lambda: _generate_answer(found, question))
     
-    return RAGQuerySearchResult(
-        answer=answer,
-        sources=found.sources,
-        num_contexts=len(found.contexts)
-    ).model_dump()
+    return {
+        "answer": answer,
+        "sources": found["sources"],
+        "num_contexts": len(found["contexts"])
+    }
 
 
 app = FastAPI()
