@@ -1,7 +1,6 @@
 import asyncio
 from pathlib import Path
 import time
-import httpx
 
 import streamlit as st
 from dotenv import load_dotenv
@@ -51,6 +50,15 @@ st.markdown("""
         border-left: 6px solid #28a745;
         margin: 1rem 0;
         color: #155724;
+        font-weight: 500;
+    }
+    .info-box {
+        padding: 1.5rem;
+        border-radius: 12px;
+        background-color: #d1ecf1;
+        border-left: 6px solid #0c5460;
+        margin: 1rem 0;
+        color: #0c5460;
         font-weight: 500;
     }
     .answer-box {
@@ -142,7 +150,7 @@ def get_inngest_client():
     try:
         event_key = st.secrets.get("INNGEST_EVENT_KEY", "")
     except (AttributeError, FileNotFoundError):
-        event_key = os.getenv("INNGEST_EVENT_KEY", "fnse8_bu_-VVRLPxI3MH9FEBlc6mHE9AD_bEMl7NeYjZAHH4V6S7BGEsdrsDwRVjNfbEaetQq7-qBDD8BFc7AA")
+        event_key = os.getenv("INNGEST_EVENT_KEY", "")
     
     return inngest.Inngest(
         app_id="rag_app",
@@ -160,85 +168,26 @@ def save_uploaded_pdf(file) -> Path:
     return file_path
 
 
-async def send_rag_ingest_event(pdf_path: Path) -> str:
-    """Send ingest event to Inngest Cloud using SDK"""
+def send_event_sync(event_name: str, data: dict) -> str:
+    """Synchronous wrapper for sending events to Inngest"""
     client = get_inngest_client()
     
-    result = await client.send(
-        inngest.Event(
-            name="rag/ingest_pdf",
-            data={
-                "pdf_path": str(pdf_path.resolve()),
-                "source_id": pdf_path.name,
-            },
-        )
-    )
-    return result[0] if result else None
-
-
-async def send_rag_query_event(question: str, top_k: int) -> str:
-    """Send query event to Inngest Cloud using SDK"""
-    client = get_inngest_client()
-    
-    result = await client.send(
-        inngest.Event(
-            name="rag/query_pdf",
-            data={
-                "question": question,
-                "top_k": top_k,
-            },
-        )
-    )
-    return result[0] if result else None
-
-
-def _inngest_api_base() -> str:
-    """Get Inngest API base URL"""
+    # Create a new event loop if needed
     try:
-        return st.secrets.get("INNGEST_API_BASE", "https://api.inngest.com/v1")
-    except (AttributeError, FileNotFoundError):
-        return os.getenv("INNGEST_API_BASE", "https://api.inngest.com/v1")
-
-
-def _inngest_event_key() -> str:
-    """Get Inngest event key"""
-    try:
-        return st.secrets.get("INNGEST_EVENT_KEY", "")
-    except (AttributeError, FileNotFoundError):
-        return os.getenv("INNGEST_EVENT_KEY", "fnse8_bu_-VVRLPxI3MH9FEBlc6mHE9AD_bEMl7NeYjZAHH4V6S7BGEsdrsDwRVjNfbEaetQq7-qBDD8BFc7AA")
-
-
-def fetch_runs(event_id: str) -> list[dict]:
-    """Fetch runs from Inngest Cloud"""
-    url = f"{_inngest_api_base()}/events/{event_id}/runs"
+        loop = asyncio.get_event_loop()
+        if loop.is_closed():
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
     
-    headers = {
-        "Authorization": f"Bearer {_inngest_event_key()}",
-    }
+    # Send event
+    async def _send():
+        result = await client.send(inngest.Event(name=event_name, data=data))
+        return result[0] if result else None
     
-    import requests
-    resp = requests.get(url, headers=headers, timeout=10)
-    resp.raise_for_status()
-    data = resp.json()
-    return data.get("data", [])
-
-
-def wait_for_run_output(event_id: str, timeout_s: float = 120.0, poll_interval_s: float = 0.5) -> dict:
-    start = time.time()
-    last_status = None
-    while True:
-        runs = fetch_runs(event_id)
-        if runs:
-            run = runs[0]
-            status = run.get("status")
-            last_status = status or last_status
-            if status in ("Completed", "Succeeded", "Success", "Finished"):
-                return run.get("output") or {}
-            if status in ("Failed", "Cancelled"):
-                raise RuntimeError(f"Function run {status}")
-        if time.time() - start > timeout_s:
-            raise TimeoutError(f"Timed out waiting for run output (last status: {last_status})")
-        time.sleep(poll_interval_s)
+    return loop.run_until_complete(_send())
 
 
 # Initialize session state
@@ -337,8 +286,13 @@ with tab1:
                     
                     try:
                         path = save_uploaded_pdf(uploaded)
-                        event_id = asyncio.run(send_rag_ingest_event(path))
-                        time.sleep(0.3)
+                        event_id = send_event_sync(
+                            "rag/ingest_pdf",
+                            {
+                                "pdf_path": str(path.resolve()),
+                                "source_id": path.name,
+                            }
+                        )
                         
                         # Add to session state
                         if path.name not in st.session_state.uploaded_docs:
@@ -349,10 +303,18 @@ with tab1:
                         st.markdown(f"""
                         <div class="success-box">
                             <strong>✅ Success!</strong><br/>
-                            Document "{path.name}" has been uploaded and is being processed.<br/>
+                            Document "{path.name}" has been uploaded and queued for processing.<br/>
                             Event ID: {event_id}
                         </div>
                         """, unsafe_allow_html=True)
+                        
+                        st.markdown("""
+                        <div class="info-box">
+                            ℹ️ <strong>Note:</strong> Document processing happens in the background. 
+                            Wait 10-30 seconds before querying this document.
+                        </div>
+                        """, unsafe_allow_html=True)
+                        
                         st.balloons()
                     except Exception as e:
                         progress_bar.empty()
@@ -374,19 +336,29 @@ with tab2:
                 </div>
                 """, unsafe_allow_html=True)
                 
-                # Answer
-                st.markdown(f"""
-                <div class="answer-box">
-                    <strong>🤖 Assistant:</strong><br/><br/>
-                    {chat['answer']}
-                </div>
-                """, unsafe_allow_html=True)
-                
-                # Sources
-                if chat.get("sources"):
-                    with st.expander("📚 View Sources", expanded=False):
-                        for s in chat["sources"]:
-                            st.markdown(f'<div class="source-item">📄 {s}</div>', unsafe_allow_html=True)
+                # Answer or pending status
+                if chat.get("pending"):
+                    st.markdown(f"""
+                    <div class="info-box">
+                        ⏳ <strong>Processing...</strong><br/>
+                        Your question is being processed. Event ID: {chat.get('event_id', 'N/A')}<br/>
+                        <small>Check your Inngest dashboard or refresh in a few seconds.</small>
+                    </div>
+                    """, unsafe_allow_html=True)
+                else:
+                    # Answer
+                    st.markdown(f"""
+                    <div class="answer-box">
+                        <strong>🤖 Assistant:</strong><br/><br/>
+                        {chat['answer']}
+                    </div>
+                    """, unsafe_allow_html=True)
+                    
+                    # Sources
+                    if chat.get("sources"):
+                        with st.expander("📚 View Sources", expanded=False):
+                            for s in chat["sources"]:
+                                st.markdown(f'<div class="source-item">📄 {s}</div>', unsafe_allow_html=True)
                 
                 st.markdown("---")
     
@@ -416,20 +388,27 @@ with tab2:
             submitted = st.form_submit_button("🔍 Get Answer", type="primary", use_container_width=True)
         
         if submitted and question.strip():
-            with st.spinner("🤔 Thinking... Generating answer from your documents..."):
+            with st.spinner("🤔 Submitting your question..."):
                 try:
-                    event_id = asyncio.run(send_rag_query_event(question.strip(), int(top_k)))
-                    output = wait_for_run_output(event_id)
-                    answer = output.get("answer", "")
-                    sources = output.get("sources", [])
+                    event_id = send_event_sync(
+                        "rag/query_pdf",
+                        {
+                            "question": question.strip(),
+                            "top_k": int(top_k),
+                        }
+                    )
                     
-                    # Add to chat history
+                    # Add to chat history as pending
                     st.session_state.chat_history.append({
                         "question": question.strip(),
-                        "answer": answer,
-                        "sources": sources
+                        "event_id": event_id,
+                        "pending": True,
+                        "timestamp": time.time()
                     })
                     
+                    st.success(f"✅ Question submitted! Event ID: {event_id}")
+                    st.info("⏳ Processing your question. Check the Inngest dashboard for results.")
+                    time.sleep(2)
                     st.rerun()
                     
                 except Exception as e:
@@ -438,12 +417,17 @@ with tab2:
     # Empty state
     if not st.session_state.chat_history:
         st.info("👆 Ask a question above to get started!")
+    
+    # Note about async processing
+    if any(chat.get("pending") for chat in st.session_state.chat_history):
+        st.markdown("---")
+        st.info("💡 **Tip:** Questions are processed asynchronously. Check your [Inngest Dashboard](https://app.inngest.com) to see results.")
 
 # Footer
 st.markdown("---")
 st.markdown("""
 <div style="text-align: center; color: #2c3e50; padding: 2rem;">
     <p style="font-size: 1.1rem; font-weight: 600;">🚀 Built with Streamlit, OpenAI, Qdrant & Inngest</p>
-    <p style="font-size: 0.9rem; color: #667eea;">💡 Tip: Upload multiple documents to create a comprehensive knowledge base</p>
+    <p style="font-size: 0.9rem; color: #667eea;">💡 Tip: Questions are processed asynchronously.</p>
 </div>
 """, unsafe_allow_html=True)
