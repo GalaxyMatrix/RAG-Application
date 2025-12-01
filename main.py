@@ -174,13 +174,18 @@ async def upload_pdf(file: UploadFile = File(...)):
 
 
 @app.post("/query")
-async def query_documents(question: str, top_k: int = 5):
+async def query_documents(question: str, top_k: int = 5, source_filter: str = None):
     """Direct synchronous query endpoint - returns answer immediately"""
     try:
         # Search vector DB
         query_vec = embed_texts([question])[0]
         store = QdrantStorage()
-        found = store.search(query_vec, top_k=top_k)
+        
+        # Apply source filter if provided
+        if source_filter and source_filter != "all":
+            found = store.search_with_filter(query_vec, top_k=top_k, source_filter=source_filter)
+        else:
+            found = store.search(query_vec, top_k=top_k)
         
         # Generate answer with OpenAI
         context_block = "\n\n".join(f"- {c}" for c in found["contexts"])

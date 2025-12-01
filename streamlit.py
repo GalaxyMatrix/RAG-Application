@@ -429,6 +429,18 @@ with tab2:
             )
         
         with col2:
+            # Document selector
+            if st.session_state.uploaded_docs:
+                doc_options = ["All Documents"] + st.session_state.uploaded_docs
+                selected_doc = st.selectbox(
+                    "Query from:",
+                    options=doc_options,
+                    help="Select which document to search"
+                )
+            else:
+                selected_doc = "All Documents"
+                st.info("Upload documents first")
+            
             top_k = st.slider(
                 "Context chunks",
                 min_value=1,
@@ -443,9 +455,20 @@ with tab2:
             with st.spinner("🤔 Getting your answer..."):
                 try:
                     backend_url = get_backend_url()
+                    
+                    # Prepare parameters
+                    params = {
+                        "question": question.strip(),
+                        "top_k": int(top_k)
+                    }
+                    
+                    # Add source filter if specific document selected
+                    if selected_doc != "All Documents":
+                        params["source_filter"] = selected_doc
+                    
                     response = requests.post(
                         f"{backend_url}/query",
-                        params={"question": question.strip(), "top_k": int(top_k)},
+                        params=params,
                         timeout=60
                     )
                     response.raise_for_status()
