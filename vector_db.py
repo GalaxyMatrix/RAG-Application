@@ -1,6 +1,6 @@
 import os
 from qdrant_client import QdrantClient
-from qdrant_client.models import VectorParams, Distance, PointStruct, Filter, FieldCondition, MatchAny
+from qdrant_client.models import VectorParams, Distance, PointStruct, Filter, FieldCondition,  MatchValue
 
 class QdrantStorage:
     def __init__(self):
@@ -48,7 +48,7 @@ class QdrantStorage:
                 must=[
                     FieldCondition(
                         key="source",
-                        match=MatchAny(any=[source_filter])
+                        match=MatchValue(value=source_filter)
                     )
                 ]
             )
