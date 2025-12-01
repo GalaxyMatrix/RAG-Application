@@ -244,6 +244,24 @@ with st.sidebar:
     if st.button("🗑️ Clear Chat History", use_container_width=True):
         st.session_state.chat_history = []
         st.rerun()
+
+    # Clear database button
+    if st.button("🗑️ Clear All Documents", use_container_width=True):
+        if st.session_state.uploaded_docs:
+            try:
+                with st.spinner("Clearing database..."):
+                    backend_url = get_backend_url()
+                    response = requests.delete(f"{backend_url}/clear", timeout=30)
+                    response.raise_for_status()
+                    st.session_state.uploaded_docs = []
+                    st.session_state.chat_history = []
+                    st.success("✅ All documents cleared!")
+                    time.sleep(1)
+                    st.rerun()
+            except Exception as e:
+                st.error(f"❌ Error: {str(e)}")
+        else:
+            st.info("No documents to clear")
     
     st.markdown("---")
     st.caption("Powered by OpenAI, Qdrant & Inngest")

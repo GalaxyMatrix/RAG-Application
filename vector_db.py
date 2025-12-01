@@ -1,6 +1,6 @@
 import os
 from qdrant_client import QdrantClient
-from qdrant_client.models import VectorParams, Distance, PointStruct, Filter, FieldCondition,  MatchValue
+from qdrant_client.models import VectorParams, Distance, PointStruct
 
 class QdrantStorage:
     def __init__(self):
@@ -39,34 +39,4 @@ class QdrantStorage:
         )
         contexts = [hit.payload["text"] for hit in results]
         sources = [hit.payload["source"] for hit in results]
-        return {"contexts": contexts, "sources": sources}
-
-    def search_with_filter(self, query_vec: list[float], top_k: int = 5, source_filter: str = None) -> dict:
-        """Search with source filtering"""
-        if source_filter:
-            filter_condition = Filter(
-                must=[
-                    FieldCondition(
-                        key="source",
-                        match=MatchValue(value=source_filter)
-                    )
-                ]
-            )
-            
-            hits = self.client.search(
-                collection_name=self.collection_name,
-                query_vector=query_vec,
-                limit=top_k,
-                query_filter=filter_condition
-            )
-        else:
-            hits = self.client.search(
-                collection_name=self.collection_name,
-                query_vector=query_vec,
-                limit=top_k
-            )
-        
-        contexts = [hit.payload["text"] for hit in hits]
-        sources = list(set([hit.payload["source"] for hit in hits]))
-        
         return {"contexts": contexts, "sources": sources}

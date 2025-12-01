@@ -13,6 +13,7 @@ from openai import OpenAI
 from data_loader import load_and_chunk_pdf, embed_texts
 from vector_db import QdrantStorage
 from customtypes import RAGChunkANDSrc, UpsertResult, RAGSearchResult, RAGQuerySearchResult
+from qdrant_client.models import VectorParams, Distance
 
 load_dotenv()
 
@@ -174,18 +175,22 @@ async def upload_pdf(file: UploadFile = File(...)):
 
 
 @app.post("/query")
-async def query_documents(question: str, top_k: int = 5, source_filter: str = None):
+async def query_documents(question: str, top_k: int = 5):
     """Direct synchronous query endpoint - returns answer immediately"""
     try:
         # Search vector DB
         query_vec = embed_texts([question])[0]
         store = QdrantStorage()
+        found = store.search(query_vec, top_k=top_k)
         
-        # Apply source filter if provided
-        if source_filter and source_filter != "all":
-            found = store.search_with_filter(query_vec, top_k=top_k, source_filter=source_filter)
-        else:
-            found = store.search(query_vec, top_k=top_k)
+        # Check if we got any results
+        if not found.get("contexts") or len(found["contexts"]) == 0:
+            return {
+                "status": "completed",
+                "answer": "I couldn't find any relevant information in the uploaded documents. Please upload documents first.",
+                "sources": [],
+                "num_contexts": 0
+            }
         
         # Generate answer with OpenAI
         context_block = "\n\n".join(f"- {c}" for c in found["contexts"])
@@ -335,6 +340,28 @@ async def get_result(event_id: str):
     except Exception as e:
         print(f"Unexpected error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Error fetching result: {str(e)}")
+
+
+@app.delete("/clear")
+async def clear_database():
+    """Clear all documents from Qdrant"""
+    try:
+        store = QdrantStorage()
+        # Delete collection
+        store.client.delete_collection(collection_name=store.collection_name)
+        
+        # Recreate empty collection
+        store.client.create_collection(
+            collection_name=store.collection_name,
+            vectors_config=VectorParams(size=1536, distance=Distance.COSINE)
+        )
+        
+        return {
+            "status": "success",
+            "message": "All documents cleared from database"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 inngest.fast_api.serve(app, inngest_client, [rag_ingest_pdf, rag_query_pdf])
