@@ -440,26 +440,27 @@ with tab2:
             submitted = st.form_submit_button("🔍 Get Answer", type="primary", use_container_width=True)
         
         if submitted and question.strip():
-            with st.spinner("🤔 Submitting your question..."):
+            with st.spinner("🤔 Getting your answer..."):
                 try:
-                    event_id = send_event_sync(
-                        "rag/query_pdf",
-                        {
-                            "question": question.strip(),
-                            "top_k": int(top_k),
-                        }
+                    backend_url = get_backend_url()
+                    response = requests.post(
+                        f"{backend_url}/query",
+                        params={"question": question.strip(), "top_k": int(top_k)},
+                        timeout=60
                     )
+                    response.raise_for_status()
+                    result = response.json()
                     
-                    # Add to chat history as pending
+                    # Add to chat history
                     st.session_state.chat_history.append({
                         "question": question.strip(),
-                        "event_id": event_id,
-                        "pending": True,
-                        "timestamp": time.time()
+                        "answer": result.get('answer', 'No answer generated'),
+                        "sources": result.get('sources', []),
+                        "pending": False
                     })
                     
-                    st.success(f"✅ Question submitted!")
-                    time.sleep(1)
+                    st.success("✅ Answer received!")
+                    time.sleep(0.5)
                     st.rerun()
                     
                 except Exception as e:

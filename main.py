@@ -173,6 +173,46 @@ async def upload_pdf(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.post("/query")
+async def query_documents(question: str, top_k: int = 5):
+    """Direct synchronous query endpoint - returns answer immediately"""
+    try:
+        # Search vector DB
+        query_vec = embed_texts([question])[0]
+        store = QdrantStorage()
+        found = store.search(query_vec, top_k=top_k)
+        
+        # Generate answer with OpenAI
+        context_block = "\n\n".join(f"- {c}" for c in found["contexts"])
+        user_content = (
+            "Use the following context to answer the question.\n\n"
+            f"Context:\n{context_block}\n\n"
+            f"Question: {question}\n"
+            "Answer concisely using the context above."
+        )
+
+        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            max_tokens=1024,
+            temperature=0.2,
+            messages=[
+                {"role": "system", "content": "You answer questions using only the provided context."},
+                {"role": "user", "content": user_content}
+            ]
+        )
+        answer = response.choices[0].message.content.strip()
+        
+        return {
+            "status": "completed",
+            "answer": answer,
+            "sources": found["sources"],
+            "num_contexts": len(found["contexts"])
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/")
 @app.head("/")
 async def root():
